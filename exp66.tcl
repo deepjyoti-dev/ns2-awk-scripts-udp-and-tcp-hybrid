@@ -1,114 +1,82 @@
 
 
-set ns [new Simulator]
 
-set f [open exp6.tr w]
-
-$ns trace-all $f
-
-set nf [open 1exp6.nam w]
-
-$ns namtrace-all $nf
-
- 
-
-proc finish {} {
-
-global ns nf f
-
-$ns flush-trace
-
-close $nf
-
-close $f
-
-exec nam 1exp6.nam &
-#awk for delay
-exit 0
-
+BEGIN {
+    FS = " ";
 }
 
+# Packet sent at AGT layer
+$1 == "s" && $4 == "AGT" {
+    flow = $6 "-" $7;  # protocol-source-dest pair as key
+    sent[flow]++;
+    send_time[flow, $11] = $2;  # packet ID as subkey
+    bytes[flow] += $10;
 
+    if (start_time == "" || $2 < start_time) start_time = $2;
+}
 
-#Create six nodes
-set n0 [$ns node]
-set n1 [$ns node]
-set n2 [$ns node]
-set n3 [$ns node]
-set n4 [$ns node]
-set n5 [$ns node]
+# Packet received at AGT layer
+$1 == "r" && $4 == "AGT" {
+    flow = $6 "-" $7;
+    recv[flow]++;
+    bytes_recv[flow] += $10;
 
-#Create links between the nodes
-$ns duplex-link $n0 $n2 2Mb 10ms DropTail
-$ns duplex-link $n2 $n3 2Mb 10ms DropTail
-$ns duplex-link $n3 $n5 2Mb 10ms DropTail
-$ns duplex-link $n4 $n2 2Mb 10ms DropTail
-$ns duplex-link $n3 $n1 2Mb 10ms DropTail
+    delay_key = flow SUBSEP $11;
+    if (delay_key in send_time)
+        delay[flow] += ($2 - send_time[delay_key]);
 
-#Setup a TCP connection between nodes n0 and n1
-set tcp1 [new Agent/TCP]
-$tcp1 set segmentSize- 1000
-$tcp1 set class_ 2
-$ns attach-agent $n0 $tcp1
-set sink1 [new Agent/TCPSink]
-$ns attach-agent $n1 $sink1
-$ns connect $tcp1 $sink1
-$tcp1 set fid_ 1
+    if ($2 > end_time) end_time = $2;
+}
 
+# Packet dropped at RTR/IFQ
+$1 == "d" && ($4 == "RTR" || $4 == "IFQ") {
+    drop[$6 "-" $7]++;
+}
 
+END {
+    print "============= NS2 Universal Trace Analysis =============";
+    total_sent = 0; total_recv = 0; total_bytes = 0;
 
+    for (flow in sent) {
+        proto = substr(flow, 1, index(flow, "-") - 1);
+        s = sent[flow];
+        r = recv[flow];
+        d = drop[flow] + 0;
+        pdr = (s > 0) ? (r / s) * 100 : 0;
+        loss = (s > 0) ? ((s - r) / s) * 100 : 0;
+        avg_delay = (r > 0) ? delay[flow] / r : 0;
+        tput = (bytes_recv[flow] * 8) / ((end_time - start_time) * 1000);  # in kbps
 
+        print "Flow                : " flow;
+        print "  Protocol          : " proto;
+        print "  Packets Sent      : " s;
+        print "  Packets Received  : " r;
+        print "  Packets Dropped   : " d;
+        printf "  PDR (%%)           : %.2f\n", pdr;
+        printf "  Packet Loss (%%)   : %.2f\n", loss;
+        printf "  Avg Delay (s)     : %.6f\n", avg_delay;
+        printf "  Throughput (kbps) : %.2f\n", tput;
+        print "--------------------------------------------------------";
 
-$ns queue-limit $n0 $n2 20
-$ns queue-limit $n2 $n3 20
-$ns queue-limit $n3 $n5 20
+        total_sent += s;
+        total_recv += r;
+        total_bytes += bytes_recv[flow];
+    }
 
+    overall_pdr = (total_sent > 0) ? (total_recv / total_sent) * 100 : 0;
+    overall_loss = 100 - overall_pdr;
+    sim_time = end_time - start_time;
+    overall_tput = (sim_time > 0) ? (total_bytes * 8) / (sim_time * 1000) : 0;
 
-
-#Setup a FTP over TCP connection
-set ftp1 [new Application/FTP]
-$ftp1 attach-agent $tcp1
-$ftp1 set type_ FTP
-
-
-
-
-
-#schedule events for the ftp  agents
-$ns at 1.0 "$ftp1 start"
-$ns at 3.0 "$ftp1 stop"
-
-
-
-
-#Setup a UDP connection between nodes n4 and n5
-set udp1 [new Agent/UDP]
-$ns attach-agent $n4 $udp1
-set cbr1 [new Application/Traffic/CBR]
-$cbr1 attach-agent $udp1
-$udp1 set class_ 2
-$udp1 set segmentSize- 1500
-set null0 [new Agent/Null]
-$ns attach-agent $n5 $null0
-$ns connect $udp1 $null0
-
-
-
-
-#schedule events for the ftp  agents
-$ns at 5.0 "$cbr1 start"
-$ns at 9.0 "$cbr1 stop"
-
-
-
-
-
-#Call the finish procedure after 5 seconds of simulation time
-$ns at 30.0 "finish"
-
-
-#Run the simulation
-$ns run
+    print "Overall Simulation Summary:";
+    print "  Total Sent Packets     : " total_sent;
+    print "  Total Received Packets : " total_recv;
+    printf "  Overall PDR (%%)         : %.2f\n", overall_pdr;
+    printf "  Overall Loss (%%)        : %.2f\n", overall_loss;
+    printf "  Overall Throughput (kbps): %.2f\n", overall_tput;
+    print "  Simulation Time (s)     : " sim_time;
+    print "========================================================";
+}
 
 
 
